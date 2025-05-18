@@ -1,149 +1,354 @@
-import { McpServer } from "@modelcontextprotocol/sdk";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { loadEnhancers } from "./enhancers/index.js";
-import { config } from "./config.js";
-import { logger } from "./utils.js";
+import { enhanceWithContext } from "./enhancers/contextEnhancer.js";
+import { enhanceWithExamples } from "./enhancers/exampleEnhancer.js";
+import {
+    enhanceWithInstructions,
+    InstructionType,
+} from "./enhancers/instructionEnhancer.js";
+import { loadConfig } from "./config.js";
+import {
+    ListToolsRequestSchema,
+    CallToolRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 
-// Create the MCP server
-const server = new McpServer({
-    name: "prompt-enhancer",
-    version: "1.0.0",
+// Load configuration
+const config = loadConfig();
+
+// Create MCP server
+const server = new Server(
+    {
+        name: "prompt-boost",
+        version: "1.0.0",
+    },
+    {
+        capabilities: {
+            tools: {},
+        },
+    }
+);
+
+// Define available tools
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return {
+        tools: [
+            {
+                name: "enhance-with-context",
+                description: "Enhance a prompt by adding relevant context",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        prompt: {
+                            type: "string",
+                            description: "The original prompt to enhance",
+                        },
+                        topic: {
+                            type: "string",
+                            description: "The topic to add context about",
+                        },
+                        depth: {
+                            type: "number",
+                            minimum: 1,
+                            maximum: 5,
+                            default: 3,
+                            description: "Depth of context to add (1-5)",
+                        },
+                    },
+                    required: ["prompt"],
+                },
+            },
+            {
+                name: "enhance-with-examples",
+                description: "Enhance a prompt by adding relevant examples",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        prompt: {
+                            type: "string",
+                            description: "The original prompt to enhance",
+                        },
+                        topic: {
+                            type: "string",
+                            description: "The topic to add examples for",
+                        },
+                        count: {
+                            type: "number",
+                            minimum: 1,
+                            maximum: 5,
+                            default: 2,
+                            description: "Number of examples to add (1-5)",
+                        },
+                    },
+                    required: ["prompt"],
+                },
+            },
+            {
+                name: "enhance-with-instructions",
+                description:
+                    "Enhance a prompt by adding specialized instructions",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        prompt: {
+                            type: "string",
+                            description: "The original prompt to enhance",
+                        },
+                        instructionType: {
+                            type: "string",
+                            enum: [
+                                "clarity",
+                                "creativity",
+                                "precision",
+                                "reasoning",
+                                "custom",
+                            ],
+                            description: "Type of instructions to add",
+                        },
+                        customInstructions: {
+                            type: "string",
+                            description:
+                                "Custom instructions (only used when instructionType is 'custom')",
+                        },
+                    },
+                    required: ["prompt", "instructionType"],
+                },
+            },
+            {
+                name: "enhance-prompt",
+                description: "Comprehensive prompt enhancement",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        prompt: {
+                            type: "string",
+                            description: "The original prompt to enhance",
+                        },
+                        addContext: {
+                            type: "boolean",
+                            default: true,
+                            description: "Whether to add relevant context",
+                        },
+                        addExamples: {
+                            type: "boolean",
+                            default: true,
+                            description: "Whether to add examples",
+                        },
+                        addInstructions: {
+                            type: "boolean",
+                            default: true,
+                            description:
+                                "Whether to add specialized instructions",
+                        },
+                        topic: {
+                            type: "string",
+                            description: "The topic for context and examples",
+                        },
+                        instructionType: {
+                            type: "string",
+                            enum: [
+                                "clarity",
+                                "creativity",
+                                "precision",
+                                "reasoning",
+                                "custom",
+                            ],
+                            description: "Type of instructions to add",
+                        },
+                        customInstructions: {
+                            type: "string",
+                            description:
+                                "Custom instructions (only used when instructionType is 'custom')",
+                        },
+                    },
+                    required: ["prompt"],
+                },
+            },
+        ],
+    };
 });
 
-// Load enhancers
-const enhancers = loadEnhancers();
+// Handle tool execution
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    try {
+        const { name, arguments: args = {} } = request.params;
 
-// Create a schema for the strategy parameter
-const strategyEnum = z.enum(
-    enhancers.length > 0
-        ? (enhancers.map((e) => e.name) as [string, ...string[]])
-        : ["context"] // Fallback if no enhancers are loaded
-);
+        // Handle enhance-with-context tool
+        if (name === "enhance-with-context") {
+            const prompt = String(args.prompt || "");
+            const topic = args.topic ? String(args.topic) : undefined;
+            const depth = args.depth ? Number(args.depth) : 3;
 
-// Register the enhance-prompt tool
-server.tool(
-    "enhance-prompt",
-    "Enhances a prompt by adding context, examples, or specialized instructions",
-    {
-        prompt: z.string().min(1).describe("The original prompt to enhance"),
-        strategy: strategyEnum.describe("The enhancement strategy to use"),
-        options: z
-            .record(z.any())
-            .optional()
-            .describe("Strategy-specific options"),
-    },
-    async ({
-        prompt,
-        strategy,
-        options = {},
-    }: {
-        prompt: string;
-        strategy: string;
-        options?: Record<string, any>;
-    }) => {
-        try {
-            logger.info(`Enhancing prompt using strategy: ${strategy}`);
-
-            // Find the requested enhancer
-            const enhancer = enhancers.find((e) => e.name === strategy);
-            if (!enhancer) {
-                throw new Error(`Unknown enhancement strategy: ${strategy}`);
+            if (!prompt) {
+                throw new Error("Prompt is required");
             }
 
-            // Enhance the prompt
-            const result = await enhancer.enhance(prompt, options);
-
-            logger.info(`Successfully enhanced prompt`);
-
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify({
-                            enhancedPrompt: result.enhancedPrompt,
-                            metadata: result.metadata,
-                        }),
-                    },
-                ],
-            };
-        } catch (error) {
-            const errorMessage =
-                error instanceof Error ? error.message : String(error);
-            logger.error(`Error enhancing prompt: ${errorMessage}`);
+            const enhancedPrompt = await enhanceWithContext(
+                prompt,
+                topic,
+                depth
+            );
 
             return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify({
-                            error: errorMessage,
-                        }),
-                    },
-                ],
-                isError: true,
+                content: [{ type: "text", text: enhancedPrompt }],
             };
         }
-    }
-);
 
-// Register the list-enhancers tool
-server.tool(
-    "list-enhancers",
-    "Lists all available prompt enhancement strategies",
-    {},
-    async (): Promise<any> => {
-        try {
-            logger.info("Listing available enhancers");
+        // Handle enhance-with-examples tool
+        if (name === "enhance-with-examples") {
+            const prompt = String(args.prompt || "");
+            const topic = args.topic ? String(args.topic) : undefined;
+            const count = args.count ? Number(args.count) : 2;
 
-            const enhancerList = enhancers.map((enhancer) => ({
-                name: enhancer.name,
-                description: enhancer.description,
-            }));
+            if (!prompt) {
+                throw new Error("Prompt is required");
+            }
 
-            return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify(enhancerList),
-                    },
-                ],
-            };
-        } catch (error) {
-            const errorMessage =
-                error instanceof Error ? error.message : String(error);
-            logger.error(`Error listing enhancers: ${errorMessage}`);
+            const enhancedPrompt = await enhanceWithExamples(
+                prompt,
+                topic,
+                count
+            );
 
             return {
-                content: [
-                    {
-                        type: "text",
-                        text: JSON.stringify({
-                            error: errorMessage,
-                        }),
-                    },
-                ],
-                isError: true,
+                content: [{ type: "text", text: enhancedPrompt }],
             };
         }
-    }
-);
 
-// Start the server
-async function main() {
-    try {
-        logger.info("Starting prompt enhancer MCP server");
+        // Handle enhance-with-instructions tool
+        if (name === "enhance-with-instructions") {
+            const prompt = String(args.prompt || "");
+            const instructionTypeStr = args.instructionType
+                ? String(args.instructionType)
+                : "clarity";
+            const customInstructions = args.customInstructions
+                ? String(args.customInstructions)
+                : undefined;
 
-        const transport = new StdioServerTransport();
-        await server.connect(transport);
+            if (!prompt) {
+                throw new Error("Prompt is required");
+            }
 
-        logger.info("Server started successfully");
+            // Validate instruction type
+            const validTypes = [
+                "clarity",
+                "creativity",
+                "precision",
+                "reasoning",
+                "custom",
+            ];
+            if (!validTypes.includes(instructionTypeStr)) {
+                throw new Error(
+                    `Invalid instruction type: ${instructionTypeStr}`
+                );
+            }
+
+            const instructionType = instructionTypeStr as InstructionType;
+
+            const enhancedPrompt = await enhanceWithInstructions(
+                prompt,
+                instructionType,
+                customInstructions
+            );
+
+            return {
+                content: [{ type: "text", text: enhancedPrompt }],
+            };
+        }
+
+        // Handle enhance-prompt tool (comprehensive enhancement)
+        if (name === "enhance-prompt") {
+            const prompt = String(args.prompt || "");
+            const addContext = args.addContext !== false; // Default to true
+            const addExamples = args.addExamples !== false; // Default to true
+            const addInstructions = args.addInstructions !== false; // Default to true
+            const topic = args.topic ? String(args.topic) : undefined;
+            const instructionTypeStr = args.instructionType
+                ? String(args.instructionType)
+                : undefined;
+            const customInstructions = args.customInstructions
+                ? String(args.customInstructions)
+                : undefined;
+
+            if (!prompt) {
+                throw new Error("Prompt is required");
+            }
+
+            let enhancedPrompt = prompt;
+
+            // Add context if requested
+            if (addContext && topic) {
+                enhancedPrompt = await enhanceWithContext(
+                    enhancedPrompt,
+                    topic,
+                    config.defaultContextDepth
+                );
+            }
+
+            // Add examples if requested
+            if (addExamples && topic) {
+                enhancedPrompt = await enhanceWithExamples(
+                    enhancedPrompt,
+                    topic,
+                    config.defaultExampleCount
+                );
+            }
+
+            // Add instructions if requested
+            if (addInstructions && instructionTypeStr) {
+                // Validate instruction type
+                const validTypes = [
+                    "clarity",
+                    "creativity",
+                    "precision",
+                    "reasoning",
+                    "custom",
+                ];
+                if (!validTypes.includes(instructionTypeStr)) {
+                    throw new Error(
+                        `Invalid instruction type: ${instructionTypeStr}`
+                    );
+                }
+
+                const instructionType = instructionTypeStr as InstructionType;
+
+                enhancedPrompt = await enhanceWithInstructions(
+                    enhancedPrompt,
+                    instructionType,
+                    customInstructions
+                );
+            }
+
+            return {
+                content: [{ type: "text", text: enhancedPrompt }],
+            };
+        }
+
+        // If tool not found
+        throw new Error(`Unknown tool: ${name}`);
     } catch (error) {
         const errorMessage =
             error instanceof Error ? error.message : String(error);
-        logger.error(`Failed to start server: ${errorMessage}`);
+        return {
+            isError: true,
+            content: [{ type: "text", text: `Error: ${errorMessage}` }],
+        };
+    }
+});
+
+// Start the server with stdio transport
+const transport = new StdioServerTransport();
+
+// Connect the server to the transport
+async function startServer() {
+    try {
+        console.log("Starting Prompt Boost MCP server...");
+        await server.connect(transport);
+        console.log("Prompt Boost MCP server connected and ready");
+    } catch (error) {
+        console.error("Error starting Prompt Boost MCP server:", error);
         process.exit(1);
     }
 }
 
-main();
+startServer();
