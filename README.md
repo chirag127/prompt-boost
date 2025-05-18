@@ -105,9 +105,7 @@ To use this server with Claude for Desktop:
     "mcpServers": {
         "prompt-enhancer": {
             "command": "node",
-            "args": [
-                "C:\\absolute\\path\\to\\prompt-enhancer-mcp\\dist\\index.js"
-            ]
+            "args": ["C:/absolute/path/to/prompt-enhancer-mcp/dist/index.js"]
         }
     }
 }
