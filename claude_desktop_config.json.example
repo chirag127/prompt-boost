@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "prompt-enhancer": {
+      "command": "node",
+      "args": [
+        "C:\\absolute\\path\\to\\prompt-enhancer-mcp\\dist\\index.js"
+      ]
+    }
+  }
+}
